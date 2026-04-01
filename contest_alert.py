@@ -1,15 +1,31 @@
 import os
 import requests
+import json
 from datetime import datetime, timezone, timedelta
 
-# ── ENV VARS (set these in GitHub Secrets) ──────────────────────────────────
+# ── ENV VARS ────────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-CHAT_ID        = os.environ["TELEGRAM_CHAT_ID"]
+CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-# Alert window: contests starting between 1h 50m and 2h 10m from now
-# GitHub Actions runs every 15 min → at most one run catches each contest
-ALERT_MIN = timedelta(hours=1, minutes=50)
-ALERT_MAX = timedelta(hours=2, minutes=10)
+# ── CONFIG ──────────────────────────────────────────────────────────────────
+ALERT_MIN = timedelta(minutes=100)   # safer window
+ALERT_MAX = timedelta(minutes=130)
+
+SENT_FILE = "sent.json"
+
+
+# ── SENT STORAGE (PREVENT DUPLICATES) ───────────────────────────────────────
+def load_sent():
+    if os.path.exists(SENT_FILE):
+        with open(SENT_FILE, "r") as f:
+            return set(json.load(f))
+    return set()
+
+
+def save_sent(sent):
+    with open(SENT_FILE, "w") as f:
+        json.dump(list(sent), f)
+
 
 # ── TELEGRAM ────────────────────────────────────────────────────────────────
 def send_alert(contest):
@@ -20,61 +36,69 @@ def send_alert(contest):
     icon = icons.get(contest["platform"], "🏆")
 
     msg = (
-        f"⏰ *Contest Alert — {mins_left} mins left!*\n\n"
-        f"{icon} *{contest['name']}*\n"
-        f"📌 Platform: `{contest['platform']}`\n"
-        f"🕐 Starts: `{contest['start'].strftime('%d %b %Y  %H:%M UTC')}`\n"
-        f"🔗 [Open Contest]({contest['url']})"
+        f"⏰ Contest Alert — {mins_left} mins left!\n\n"
+        f"{icon} {contest['name']}\n"
+        f"📌 Platform: {contest['platform']}\n"
+        f"🕐 Starts: {contest['start'].strftime('%d %b %Y %H:%M UTC')}\n"
+        f"🔗 {contest['url']}"
     )
-    resp = requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"},
-        timeout=10,
-    )
-    resp.raise_for_status()
-    print(f"  ✅ Alert sent: {contest['name']}")
+
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": CHAT_ID, "text": msg},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        print(f"  ✅ Alert sent: {contest['name']}")
+    except Exception as e:
+        print(f"  ❌ Telegram error: {e}")
 
 
 # ── HELPERS ─────────────────────────────────────────────────────────────────
-def in_window(start: datetime) -> bool:
-    diff = start - datetime.now(timezone.utc)
+def in_window(start: datetime, now: datetime) -> bool:
+    diff = start - now
     return ALERT_MIN <= diff <= ALERT_MAX
 
 
 # ── CODEFORCES ──────────────────────────────────────────────────────────────
-def get_codeforces():
+def get_codeforces(now):
     print("Fetching Codeforces…")
     try:
         r = requests.get("https://codeforces.com/api/contest.list", timeout=15)
         r.raise_for_status()
         data = r.json()
-        if data["status"] != "OK":
-            print("  ⚠️  Codeforces API error")
-            return []
 
         contests = []
-        for c in data["result"]:
-            if c["phase"] != "BEFORE":
+        for c in data.get("result", []):
+            if c.get("phase") != "BEFORE":
                 continue
+
             start = datetime.fromtimestamp(c["startTimeSeconds"], tz=timezone.utc)
-            if in_window(start):
+
+            if in_window(start, now):
                 contests.append({
-                    "name":     c["name"],
+                    "id": f"cf_{c['id']}",
+                    "name": c["name"],
                     "platform": "Codeforces",
-                    "start":    start,
-                    "url":      f"https://codeforces.com/contest/{c['id']}",
+                    "start": start,
+                    "url": f"https://codeforces.com/contest/{c['id']}",
                 })
-        print(f"  Found {len(contests)} contest(s) in window.")
+
+        print(f"  Found {len(contests)} contest(s).")
         return contests
+
     except Exception as e:
         print(f"  ❌ Codeforces error: {e}")
         return []
 
 
 # ── LEETCODE ────────────────────────────────────────────────────────────────
-def get_leetcode():
+def get_leetcode(now):
     print("Fetching LeetCode…")
+
     query = "{ allContests { title startTime titleSlug } }"
+
     try:
         r = requests.post(
             "https://leetcode.com/graphql",
@@ -83,69 +107,74 @@ def get_leetcode():
             timeout=15,
         )
         r.raise_for_status()
-        all_c = r.json().get("data", {}).get("allContests", [])
 
         contests = []
-        now = datetime.now(timezone.utc)
+        all_c = r.json().get("data", {}).get("allContests", [])
+
         for c in all_c:
             start = datetime.fromtimestamp(c["startTime"], tz=timezone.utc)
+
             if start <= now:
                 continue
-            if in_window(start):
+
+            if in_window(start, now):
                 contests.append({
-                    "name":     c["title"],
+                    "id": f"lc_{c['titleSlug']}",
+                    "name": c["title"],
                     "platform": "LeetCode",
-                    "start":    start,
-                    "url":      f"https://leetcode.com/contest/{c['titleSlug']}",
+                    "start": start,
+                    "url": f"https://leetcode.com/contest/{c['titleSlug']}",
                 })
-        print(f"  Found {len(contests)} contest(s) in window.")
+
+        print(f"  Found {len(contests)} contest(s).")
         return contests
+
     except Exception as e:
         print(f"  ❌ LeetCode error: {e}")
         return []
 
 
 # ── CODECHEF ────────────────────────────────────────────────────────────────
-def get_codechef():
+def get_codechef(now):
     print("Fetching CodeChef…")
+
     try:
         r = requests.get(
             "https://www.codechef.com/api/list/contests/all",
-            params={"sort_by": "START", "sorting_order": "asc", "offset": 0, "mode": "all"},
             headers={"User-Agent": "Mozilla/5.0"},
             timeout=15,
         )
         r.raise_for_status()
-        data = r.json()
 
+        data = r.json()
         contests = []
+
         for section in ("future_contests", "present_contests"):
             for c in data.get(section, []):
-                # CodeChef returns IST (UTC+5:30); convert properly
-                start_str = c.get("contest_start_date_iso") or c.get("contest_start_date")
+                start_str = c.get("contest_start_date_iso")
                 if not start_str:
                     continue
+
                 try:
-                    # ISO format with offset e.g. "2024-11-02T14:30:00+05:30"
-                    from datetime import datetime
                     start = datetime.fromisoformat(start_str)
-                    if start.tzinfo is None:
-                        # Assume IST if no tz info
-                        start = start.replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
                     start = start.astimezone(timezone.utc)
                 except Exception:
                     continue
 
-                if in_window(start):
+                if in_window(start, now):
                     code = c.get("contest_code", "")
+
                     contests.append({
-                        "name":     c.get("contest_name", code),
+                        "id": f"cc_{code}",
+                        "name": c.get("contest_name", code),
                         "platform": "CodeChef",
-                        "start":    start,
-                        "url":      f"https://www.codechef.com/{code}",
+                        "start": start,
+                        "url": f"https://www.codechef.com/{code}",
                     })
-        print(f"  Found {len(contests)} contest(s) in window.")
+
+        print(f"  Found {len(contests)} contest(s).")
         return contests
+
     except Exception as e:
         print(f"  ❌ CodeChef error: {e}")
         return []
@@ -153,20 +182,32 @@ def get_codechef():
 
 # ── MAIN ────────────────────────────────────────────────────────────────────
 def main():
-    print(f"\n🔍 Checking contests at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    print(f"   Alert window: contests starting in 1h 50m – 2h 10m\n")
+    now = datetime.now(timezone.utc)
+
+    print(f"\n🔍 Checking at {now.strftime('%Y-%m-%d %H:%M UTC')}")
+    print("   Window: 100–130 mins before start\n")
+
+    sent = load_sent()
+    new_sent = set(sent)
 
     all_contests = []
-    all_contests.extend(get_codeforces())
-    all_contests.extend(get_leetcode())
-    all_contests.extend(get_codechef())
+    all_contests += get_codeforces(now)
+    all_contests += get_leetcode(now)
+    all_contests += get_codechef(now)
 
-    print(f"\n📬 Total alerts to send: {len(all_contests)}")
+    print(f"\n📬 Total found: {len(all_contests)}")
+
     for c in all_contests:
+        if c["id"] in sent:
+            continue
+
         send_alert(c)
+        new_sent.add(c["id"])
+
+    save_sent(new_sent)
 
     if not all_contests:
-        print("   No contests starting in ~2 hours. Nothing sent.")
+        print("No contests found.")
 
     print("\n✅ Done.\n")
 
