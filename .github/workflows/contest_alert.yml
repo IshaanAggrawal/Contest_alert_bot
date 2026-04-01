@@ -2,10 +2,10 @@ name: 🏆 Contest Alert Bot
 
 on:
   schedule:
-    # Runs every 15 minutes — GitHub's minimum allowed frequency
-    - cron: "*/15 * * * *"
+    # Runs every 30 minutes (safe for free tier)
+    - cron: "*/30 * * * *"
 
-  # Lets you trigger it manually from GitHub UI for testing
+  # Manual trigger (for testing)
   workflow_dispatch:
 
 jobs:
@@ -27,5 +27,14 @@ jobs:
       - name: 🔍 Run contest alert script
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python contest_alert.py
+
+      # ✅ Persist sent.json (VERY IMPORTANT)
+      - name: 💾 Save sent state
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+          git add sent.json || true
+          git commit -m "update sent contests" || true
+          git push || true
