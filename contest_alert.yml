@@ -1,0 +1,31 @@
+name: 🏆 Contest Alert Bot
+
+on:
+  schedule:
+    # Runs every 15 minutes — GitHub's minimum allowed frequency
+    - cron: "*/15 * * * *"
+
+  # Lets you trigger it manually from GitHub UI for testing
+  workflow_dispatch:
+
+jobs:
+  check-contests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout repo
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 📦 Install dependencies
+        run: pip install requests
+
+      - name: 🔍 Run contest alert script
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python contest_alert.py
