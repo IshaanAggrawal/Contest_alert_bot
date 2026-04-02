@@ -13,7 +13,7 @@ STATE_FILE = "state.json"
 TWO_HOUR_MIN = timedelta(minutes=100)
 TWO_HOUR_MAX = timedelta(minutes=130)
 
-DAY_ALERT_MAX = timedelta(days=30)
+DAY_ALERT_MAX = timedelta(days=3)
 
 # ── STATE ───────────────────────────────────────────────────────────────────
 def load_state():
